@@ -97,12 +97,6 @@ func ListenAndServe(addr string, network string, handler Handler) error {
 	return server.ListenAndServe()
 }
 
-// Start a server with these listeners. Invoke handler for incoming queries.
-func StartAndServe(ls []net.Listener, ps []net.PacketConn, handler Handler) error {
-	server := &Server{Listeners: ls, PacketConns: ps, Handler: handler}
-	return server.StartAndServe()
-}
-
 func (mux *ServeMux) match(q string, t uint16) Handler {
 	mux.m.RLock()
 	defer mux.m.RUnlock()
@@ -203,10 +197,10 @@ type Server struct {
 	Addr string
 	// if "tcp" it will invoke a TCP listener, otherwise an UDP one.
 	Net string
-	// TCP Listeners to use, this is to aid in systemd's socket activation.
-	Listeners []net.Listener
-	// UDP "Listeners" to use, this is to aid in systemd's socket activation.
-	PacketConns []net.PacketConn
+	// UDP socket. If set, this takes precedence over Listener and Addr
+	PacketConn net.PacketConn
+	// TCP socket. If set, this takes precedence over Addr
+	Listener net.Listener
 	// Handler to invoke, dns.DefaultServeMux if nil.
 	Handler Handler
 	// Default buffer size to use to read incoming UDP messages. If not set
@@ -232,6 +226,19 @@ func (srv *Server) ListenAndServe() error {
 	}
 	if srv.UDPSize == 0 {
 		srv.UDPSize = MinMsgSize
+	}
+	if srv.PacketConn != nil {
+		if t, ok := srv.PacketConn.(*net.UDPConn); ok {
+			if e := setUDPSocketOptions(t); e != nil {
+				return e
+			}
+			return srv.serveUDP(t)
+		}
+	}
+	if srv.Listener != nil {
+		if t, ok := srv.Listener.(*net.TCPListener); ok {
+			return srv.serveTCP(t)
+		}
 	}
 	switch srv.Net {
 	case "tcp", "tcp4", "tcp6":
@@ -260,28 +267,6 @@ func (srv *Server) ListenAndServe() error {
 		return srv.serveUDP(l)
 	}
 	return &Error{err: "bad network"}
-}
-
-// StartAndServe starts a nameserver with the first listener the or first
-// packetconn configured in *Server.
-func (srv *Server) StartAndServe() error {
-	if len(srv.Listeners) > 0 {
-		if t, ok := srv.Listeners[0].(*net.TCPListener); ok {
-			return srv.serveTCP(t)
-		}
-	}
-	if len(srv.PacketConns) > 0 {
-		if srv.UDPSize == 0 {
-			srv.UDPSize = MinMsgSize
-		}
-		if t, ok := srv.PacketConns[0].(*net.UDPConn); ok {
-			if e := setUDPSocketOptions(t); e != nil {
-				return e
-			}
-			return srv.serveUDP(t)
-		}
-	}
-	return &Error{err: "bad listeners"}
 }
 
 // serveTCP starts a TCP listener for the server.
