@@ -197,10 +197,6 @@ type Server struct {
 	Addr string
 	// if "tcp" it will invoke a TCP listener, otherwise an UDP one.
 	Net string
-	// UDP socket. If set, this takes precedence over Listener and Addr
-	PacketConn net.PacketConn
-	// TCP socket. If set, this takes precedence over Addr
-	Listener net.Listener
 	// Handler to invoke, dns.DefaultServeMux if nil.
 	Handler Handler
 	// Default buffer size to use to read incoming UDP messages. If not set
@@ -224,22 +220,6 @@ func (srv *Server) ListenAndServe() error {
 	if addr == "" {
 		addr = ":domain"
 	}
-	if srv.UDPSize == 0 {
-		srv.UDPSize = MinMsgSize
-	}
-	if srv.PacketConn != nil {
-		if t, ok := srv.PacketConn.(*net.UDPConn); ok {
-			if e := setUDPSocketOptions(t); e != nil {
-				return e
-			}
-			return srv.serveUDP(t)
-		}
-	}
-	if srv.Listener != nil {
-		if t, ok := srv.Listener.(*net.TCPListener); ok {
-			return srv.serveTCP(t)
-		}
-	}
 	switch srv.Net {
 	case "tcp", "tcp4", "tcp6":
 		a, e := net.ResolveTCPAddr(srv.Net, addr)
@@ -250,7 +230,7 @@ func (srv *Server) ListenAndServe() error {
 		if e != nil {
 			return e
 		}
-		return srv.serveTCP(l)
+		return srv.ServeTCP(l)
 	case "udp", "udp4", "udp6":
 		a, e := net.ResolveUDPAddr(srv.Net, addr)
 		if e != nil {
@@ -264,14 +244,14 @@ func (srv *Server) ListenAndServe() error {
 		if e := setUDPSocketOptions(l); e != nil {
 			return e
 		}
-		return srv.serveUDP(l)
+		return srv.ServeUDP(l)
 	}
 	return &Error{err: "bad network"}
 }
 
 // serveTCP starts a TCP listener for the server.
 // Each request is handled in a seperate goroutine.
-func (srv *Server) serveTCP(l *net.TCPListener) error {
+func (srv *Server) ServeTCP(l *net.TCPListener) error {
 	defer l.Close()
 	handler := srv.Handler
 	if handler == nil {
@@ -297,8 +277,11 @@ func (srv *Server) serveTCP(l *net.TCPListener) error {
 
 // serveUDP starts a UDP listener for the server.
 // Each request is handled in a seperate goroutine.
-func (srv *Server) serveUDP(l *net.UDPConn) error {
+func (srv *Server) ServeUDP(l *net.UDPConn) error {
 	defer l.Close()
+	if srv.UDPSize == 0 {
+		srv.UDPSize = MinMsgSize
+	}
 	handler := srv.Handler
 	if handler == nil {
 		handler = DefaultServeMux
